@@ -1,0 +1,15 @@
+# Secrets — never commit the Upstox token
+.env
+.env.*
+
+# Local Parquet/DuckDB data store
+data/
+*.parquet
+*.duckdb
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ipynb_checkpoints/
