@@ -47,9 +47,13 @@ from urllib.parse import quote
 import pandas as pd
 import requests
 
+import config
+
 # --------------------------------------------------------------------------- #
 # Config
 # --------------------------------------------------------------------------- #
+config.load_env()        # populate os.environ from .env (real env wins)
+
 BASE = "https://api.upstox.com"
 DATA_DIR = Path(os.environ.get("OI_PCR_DATA_DIR", "./data"))
 ATM_WINDOW = 10          # +/- strikes around ATM for the PCR_M_ATM variant
