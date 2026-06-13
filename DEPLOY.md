@@ -10,6 +10,14 @@ web link you can open from any browser or phone. You only do this once.
 
 ## Steps
 
+0. **Make the repo public first (one time).** Streamlit's free tier can't see a
+   *private* repo unless you grant extra access, so the simplest path is to make
+   it public. Your token is NOT in the code (it lives only in Secrets), so this
+   is safe.
+   - Open **https://github.com/milanpat3l/quantai/settings**
+   - Scroll to the bottom (**“Danger Zone”**) → **“Change repository visibility”**
+     → **“Change to public”** → type the repo name to confirm.
+
 1. **Go to** [share.streamlit.io](https://share.streamlit.io) and click
    **“Sign in with GitHub.”** Approve the access it asks for.
 
