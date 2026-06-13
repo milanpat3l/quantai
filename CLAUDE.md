@@ -89,9 +89,9 @@ return UDAPI1221 without Static IP — expected; we don't use them.
 1. ✅ **DONE — Validate live `fetch` + `pcr` end-to-end** (Nifty 50, 2026-06-16).
    Real-API shapes confirmed; ATM fixed to spot-anchored. Still TODO: date-window
    chunking for minute data (daily ranges are fine as one request).
-2. **Lead-lag check (gate before any ML):** pull the futures candle, merge with `pcr_m`,
-   print the lagged-correlation profile. Confirm PCR_M actually *leads* price (the article
-   claims a negative relationship). If no edge here, stop — no model will fix it.
+2. **Lead-lag check (gate before any ML):** ✅ scaffolding built — `analysis.py`
+   computes corr(PCR[t], price_return[t+lag]) and is surfaced in the dashboard.
+   Needs ~weeks of logged data before the profile is meaningful (currently noise).
 3. **Live WebSocket logger** → same Parquet store (forward-fill path if skipping Plus).
 4. ✅ **DONE (v1) — Visualization:** `plot_pcr.py` builds a Plotly dual-axis chart
    (PCR series left, price right) + turning-point arrows, mirroring the Quantsapp

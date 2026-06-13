@@ -18,13 +18,17 @@ first so there is data to show).
 
 from __future__ import annotations
 
+import os
+
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 import config
 config.load_env()
-from upstox_oi_pcr import DATA_DIR, _slug
+from upstox_oi_pcr import DATA_DIR, _slug, log_daily
 import plot_pcr
+import analysis
 
 SERIES_LABELS = {
     "pcr": "OI-PCR (standard)",
@@ -72,9 +76,30 @@ def main() -> None:
     st.markdown("## 📈 OI-PCR Historical — Put/Call Ratio vs Price")
 
     unders = list_underlyings()
+
+    # ---- sidebar: data status + one-click refresh -------------------------- #
+    with st.sidebar:
+        st.header("Data")
+        token_ok = bool(os.environ.get("UPSTOX_ACCESS_TOKEN"))
+        st.caption("Analytics token: " + ("✅ set" if token_ok else "❌ missing (.env)"))
+        refresh_label = st.text_input("Underlying to fetch",
+                                      value=next(iter(unders), "NSE_INDEX|Nifty 50"))
+        if st.button("⟳ Fetch latest (log)", disabled=not token_ok,
+                     help="Runs the forward-logger for the front expiry, then rebuilds PCR"):
+            with st.spinner(f"Logging {refresh_label} …"):
+                try:
+                    log_daily(refresh_label)
+                    import upstox_oi_pcr
+                    upstox_oi_pcr.pcr(refresh_label)
+                    st.cache_data.clear()
+                    st.success("Updated. Re-rendering…")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Fetch failed: {e}")
+
     if not unders:
-        st.warning("No data yet. Populate the store first:\n\n"
-                   "```\npython3 upstox_oi_pcr.py log\n```")
+        st.warning("No data yet. Set UPSTOX_ACCESS_TOKEN in `.env`, then run "
+                   "`python3 upstox_oi_pcr.py log` (or use the sidebar button).")
         st.stop()
 
     c1, c2, c3 = st.columns([3, 4, 2])
@@ -131,6 +156,26 @@ def main() -> None:
 
     st.caption("Spot is used as the price proxy until a futures line is wired in. "
                "Turning-point arrows are heuristic (local PCR extrema), not trade signals.")
+
+    # ---- lead-lag analysis: does PCR lead price? --------------------------- #
+    with st.expander("🔬 Lead-lag analysis — does this PCR lead price?", expanded=False):
+        max_lag = st.slider("Max lag (days)", 1, 10, min(5, max(1, len(dff) // 2)))
+        ll = analysis.lead_lag(dff, series, max_lag=max_lag)
+        if ll.empty or ll["corr"].notna().sum() == 0:
+            st.info("Not enough overlapping PCR/price data yet to correlate.")
+        else:
+            bar = go.Figure(go.Bar(
+                x=ll["lag"], y=ll["corr"],
+                marker_color=["#d23b3b" if c < 0 else "#2e9e5b" for c in ll["corr"].fillna(0)]))
+            bar.update_layout(
+                height=300, template="plotly_white",
+                title="corr( PCR[t] , price_return[t+lag] )  —  positive lag = PCR leads",
+                xaxis_title="lag (days)", yaxis_title="correlation",
+                margin=dict(t=50, b=40, l=10, r=10))
+            st.plotly_chart(bar, use_container_width=True)
+            st.write(analysis.interpret(ll))
+        st.caption("Gate before any ML: a stable, signed correlation at positive lags is the "
+                   "edge. With only a few days logged this is noise — it firms up as history grows.")
 
 
 if __name__ == "__main__":
