@@ -115,6 +115,14 @@ def main() -> None:
         st.error("Empty PCR table for this underlying.")
         st.stop()
 
+    # price source: futures (true Quantsapp line) if available, else spot
+    has_fut = "fut" in df and df["fut"].notna().any()
+    price_col = "fut" if has_fut else "spot"
+    if has_fut:
+        choice = c3.radio("Price", ["Futures", "Spot"], horizontal=True)
+        price_col = "fut" if choice == "Futures" else "spot"
+    price_label = "FUT price" if price_col == "fut" else "Price (spot)"
+
     dmin, dmax = df["date"].min().date(), df["date"].max().date()
     if dmin == dmax:
         rng = (dmin, dmax)
@@ -126,7 +134,8 @@ def main() -> None:
 
     left, right = st.columns([3, 1])
 
-    fig = plot_pcr.build_figure(dff, series, window, f"{label} — {SERIES_LABELS[series]}")
+    fig = plot_pcr.build_figure(dff, series, window, f"{label} — {SERIES_LABELS[series]}",
+                                price_col=price_col)
     fig.update_layout(height=520, margin=dict(t=60, b=40, l=10, r=10))
     left.plotly_chart(fig, use_container_width=True)
 
@@ -135,27 +144,28 @@ def main() -> None:
     m1, m2, m3 = left.columns(3)
     m1.metric("Date", str(last["date"].date()))
     m2.metric(SERIES_LABELS[series], f"{last[series]:.3f}" if pd.notna(last[series]) else "—")
-    if pd.notna(last.get("spot")):
-        m3.metric("Price (spot)", f"{last['spot']:,.2f}")
+    if pd.notna(last.get(price_col)):
+        m3.metric(price_label, f"{last[price_col]:,.2f}")
 
     # right-side table, newest first, with trend arrows
     tbl = dff[["date", series]].copy()
-    if "spot" in dff:
-        tbl["price"] = dff["spot"]
+    if price_col in dff:
+        tbl["price"] = dff[price_col]
     tbl["trend"] = tbl[series].diff().map(_arrow)
     tbl = tbl.sort_values("date", ascending=False)
     tbl["date"] = tbl["date"].dt.strftime("%d-%b-%y")
-    tbl = tbl.rename(columns={series: "OI-PCR", "price": "FUT price", "trend": "Δ"})
+    pcr_col = "VOL-PCR" if series.startswith("vol") else "OI-PCR"
+    tbl = tbl.rename(columns={series: pcr_col, "price": price_label, "trend": "Δ"})
 
     def _color(v):
         return "color: #2e9e5b" if v == "▲" else ("color: #d23b3b" if v == "▼" else "color: gray")
 
     right.markdown("**History**")
-    sty = tbl.style.map(_color, subset=["Δ"]).format({"OI-PCR": "{:.3f}", "FUT price": "{:,.2f}"})
+    sty = tbl.style.map(_color, subset=["Δ"]).format({pcr_col: "{:.3f}", price_label: "{:,.2f}"})
     right.dataframe(sty, hide_index=True, use_container_width=True, height=520)
 
-    st.caption("Spot is used as the price proxy until a futures line is wired in. "
-               "Turning-point arrows are heuristic (local PCR extrema), not trade signals.")
+    st.caption("Price line is the near-month future (toggle to spot). Turning-point "
+               "arrows are heuristic (local PCR extrema), not trade signals.")
 
     # ---- lead-lag analysis: does PCR lead price? --------------------------- #
     with st.expander("🔬 Lead-lag analysis — does this PCR lead price?", expanded=False):

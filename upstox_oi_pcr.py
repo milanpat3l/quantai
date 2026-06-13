@@ -37,6 +37,9 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import gzip
+import io
+import json
 import os
 import sys
 import time
@@ -267,13 +270,72 @@ def _fetch_underlying_price(api: "Upstox", underlying: str, frm: str, to: str) -
     px["date"] = pd.to_datetime(px["ts"]).dt.date.astype(str)
     px = px[["date", "close"]].rename(columns={"close": "spot"})
 
+    # near-month FUTURES close (the true Quantsapp price line); spot stays the
+    # ATM anchor. Best-effort: if the instrument master / future is unavailable
+    # we keep just spot.
+    fut_key = nearest_future_key(underlying)
+    if fut_key:
+        try:
+            fc = api.candles_live(fut_key, frm, to)
+            if fc:
+                fdf = pd.DataFrame([dict(zip(_COLS, c)) for c in fc])
+                fdf["date"] = pd.to_datetime(fdf["ts"]).dt.date.astype(str)
+                px = px.merge(fdf[["date", "close"]].rename(columns={"close": "fut"}),
+                              on="date", how="outer")
+        except RuntimeError as e:
+            print(f"  ! futures fetch failed ({e}); price line falls back to spot")
+
     out = DATA_DIR / _slug(underlying) / "price.parquet"
     if out.exists():
         prev = pd.read_parquet(out)
-        px = pd.concat([prev, px]).drop_duplicates("date", keep="last")
-    px = px.sort_values("date")
+        px = pd.concat([prev, px])
+    # one row per date, keeping the latest non-null value in each column
+    px = px.sort_values("date").groupby("date", as_index=False).last()
     px.to_parquet(out, index=False)
     print(f"wrote {len(px):,} price rows -> {out}")
+
+
+_FUT_MASTER_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+
+
+def nearest_future_key(underlying: str, on: str | None = None) -> str | None:
+    """instrument_key of the nearest non-expired monthly FUTURE for ``underlying``.
+
+    Uses Upstox's NSE instrument master, caching the FUT subset locally (7-day
+    TTL) so we don't re-download ~2 MB on every run. Returns None if unavailable.
+    """
+    on = on or dt.date.today().isoformat()
+    cache = DATA_DIR / ".instruments_fut_NSE.json"
+    futs = None
+    if cache.exists() and (time.time() - cache.stat().st_mtime) < 7 * 86400:
+        try:
+            futs = json.loads(cache.read_text())
+        except Exception:
+            futs = None
+    if futs is None:
+        try:
+            r = requests.get(_FUT_MASTER_URL, timeout=60)
+            r.raise_for_status()
+            data = json.load(gzip.GzipFile(fileobj=io.BytesIO(r.content)))
+        except Exception as e:
+            print(f"  ! instrument master unavailable ({e}); no futures line")
+            return None
+        futs = [x for x in data if x.get("instrument_type") == "FUT"]
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        cache.write_text(json.dumps(futs))
+
+    cand = []
+    for x in futs:
+        if x.get("underlying_key") != underlying:
+            continue
+        exp = x.get("expiry")
+        d = (dt.datetime.utcfromtimestamp(exp / 1000).date().isoformat()
+             if isinstance(exp, (int, float)) else str(exp)[:10])
+        if d >= on:
+            cand.append((d, x["instrument_key"]))
+    if not cand:
+        return None
+    return min(cand)[1]
 
 
 # --------------------------------------------------------------------------- #

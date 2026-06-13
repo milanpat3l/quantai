@@ -66,7 +66,8 @@ def load(underlying: str) -> pd.DataFrame:
     return df.sort_values("date").reset_index(drop=True)
 
 
-def build_figure(df: pd.DataFrame, series: str, window: int, title: str) -> go.Figure:
+def build_figure(df: pd.DataFrame, series: str, window: int, title: str,
+                 price_col: str = "fut") -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     color = _series_color(series)
 
@@ -75,10 +76,13 @@ def build_figure(df: pd.DataFrame, series: str, window: int, title: str) -> go.F
         x=df["date"], y=df[series], name=series.upper().replace("_", "-"),
         mode="lines", line=dict(color=color, width=2)), secondary_y=False)
 
-    # right axis: price line
-    if df["spot"].notna().any():
+    # right axis: price line — prefer futures, fall back to spot
+    if price_col not in df or not df[price_col].notna().any():
+        price_col = "spot"
+    if price_col in df and df[price_col].notna().any():
+        pname = "FUT price" if price_col == "fut" else "Price (spot)"
         fig.add_trace(go.Scatter(
-            x=df["date"], y=df["spot"], name="Price (spot)",
+            x=df["date"], y=df[price_col], name=pname,
             mode="lines", line=dict(color=PRICE_ORANGE, width=2)), secondary_y=True)
 
     # turning-point markers on the PCR series
@@ -111,12 +115,14 @@ def main() -> None:
                    help="which PCR line")
     p.add_argument("--window", type=int, default=1,
                    help="neighbours each side for turning-point detection")
+    p.add_argument("--price", default="fut", choices=["fut", "spot"],
+                   help="price line source (default futures, falls back to spot)")
     p.add_argument("--out", default=None, help="output path stem (default in store)")
     args = p.parse_args()
 
     df = load(args.underlying)
     title = f"{args.underlying} — {args.series.upper().replace('_','-')} vs Price"
-    fig = build_figure(df, args.series, args.window, title)
+    fig = build_figure(df, args.series, args.window, title, price_col=args.price)
 
     stem = Path(args.out) if args.out else DATA_DIR / _slug(args.underlying) / "pcr_chart"
     stem.parent.mkdir(parents=True, exist_ok=True)

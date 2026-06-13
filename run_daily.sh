@@ -13,7 +13,7 @@ cd "$(dirname "$0")"
 # Activate a venv if present (optional)
 [ -f .venv/bin/activate ] && source .venv/bin/activate
 
-UNDERLYINGS=("NSE_INDEX|Nifty 50")   # add more, e.g. "NSE_INDEX|Nifty Bank"
+UNDERLYINGS=("NSE_INDEX|Nifty 50" "NSE_INDEX|Nifty Bank")   # add more as needed
 
 echo "=== $(date -Is) daily log run ==="
 for u in "${UNDERLYINGS[@]}"; do

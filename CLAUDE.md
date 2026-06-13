@@ -65,8 +65,15 @@ Two CLI commands:
 - `pcr --underlying "NSE_INDEX|Nifty 50" [--atm-window N]`
   → DuckDB aggregation → daily table: `pcr`, `pcr_m`, `pcr_m_atm`, `vol_pcr`,
   `vol_pcr_atm`, `call_oi`, `put_oi`, `call_vol`, `put_vol`, `atm_strike`.
-- `plot_pcr.py --series {pcr,pcr_m,pcr_m_atm,vol_pcr,vol_pcr_atm}` → dual-axis chart.
-- `dashboard.py` (Streamlit) → interactive chart + history table; `streamlit run dashboard.py`.
+- `plot_pcr.py --series {pcr,pcr_m,pcr_m_atm,vol_pcr,vol_pcr_atm} [--price fut|spot]` → dual-axis chart.
+- `analysis.py` → lead-lag check corr(PCR[t], price_return[t+lag]).
+- `model.py` → walk-forward (expanding-window) PCR→next-day-direction baseline; refuses on thin data.
+- `dashboard.py` (Streamlit) → interactive chart + history table + Futures/Spot toggle
+  + lead-lag panel; `streamlit run dashboard.py`.
+
+Price line: near-month FUTURES close (resolved from Upstox's NSE instrument
+master, cached) stored alongside spot in `price.parquet`; spot remains the ATM
+anchor. Logger handles multiple underlyings (Nifty 50 + Bank Nifty in `run_daily.sh`).
 
 Auth: uses the read-only **Upstox Analytics Token** (~1yr, no daily login, no
 Static IP for market data) in `UPSTOX_ACCESS_TOKEN` (local `.env`, git-ignored).
@@ -97,10 +104,13 @@ return UDAPI1221 without Static IP — expected; we don't use them.
    (PCR series left, price right) + turning-point arrows, mirroring the Quantsapp
    screen → `data/<slug>/pcr_chart.{html,png}`. TODO: side data table; futures
    price line (currently spot proxy); intraday once logged.
-5. **ML layer — only after step 2 confirms an edge.** Climb: statistics baseline
-   (logistic/linear on OI-derived features) → LightGBM with **strict walk-forward CV**
-   (never random shuffle — leakage kills it) → sequence models only if intraday + years of
-   data. Watch small samples, lookahead bias, non-stationarity/regime change.
+5. **ML layer — only after step 2 confirms an edge.** ✅ scaffolding built —
+   `model.py` does a strict walk-forward (expanding-window, no shuffle) logistic
+   baseline on PCR features → next-day direction, comparing to the majority
+   baseline and refusing on thin data. Climb later: LightGBM, then sequence
+   models only if intraday + years of data. Watch small samples, lookahead bias,
+   non-stationarity/regime change. Not usable until the logger has months of data
+   and step-2 shows a real edge.
 
 ## Working style
 Concise, modular, config-driven, reusable. Minimal rework. Prefer one clean module
