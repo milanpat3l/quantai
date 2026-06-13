@@ -88,8 +88,10 @@ return UDAPI1221 without Static IP — expected; we don't use them.
    print the lagged-correlation profile. Confirm PCR_M actually *leads* price (the article
    claims a negative relationship). If no edge here, stop — no model will fix it.
 3. **Live WebSocket logger** → same Parquet store (forward-fill path if skipping Plus).
-4. **Visualization:** dual-axis chart (PCR_M left, futures price right) + turning-point
-   arrows. Plotly, or a React/Recharts artifact mirroring the Quantsapp screen.
+4. ✅ **DONE (v1) — Visualization:** `plot_pcr.py` builds a Plotly dual-axis chart
+   (PCR series left, price right) + turning-point arrows, mirroring the Quantsapp
+   screen → `data/<slug>/pcr_chart.{html,png}`. TODO: side data table; futures
+   price line (currently spot proxy); intraday once logged.
 5. **ML layer — only after step 2 confirms an edge.** Climb: statistics baseline
    (logistic/linear on OI-derived features) → LightGBM with **strict walk-forward CV**
    (never random shuffle — leakage kills it) → sequence models only if intraday + years of

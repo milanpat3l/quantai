@@ -2,3 +2,5 @@ pandas>=2.0
 requests>=2.31
 duckdb>=0.10
 pyarrow>=14.0
+plotly>=6.0
+kaleido>=1.0   # static PNG export (needs Chrome: run `plotly_get_chrome`)
