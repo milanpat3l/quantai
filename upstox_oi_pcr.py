@@ -185,7 +185,36 @@ def fetch(underlying: str, expiry: str, frm: str, to: str, expired: bool) -> Pat
     path = out / "chain.parquet"
     df.to_parquet(path, index=False)
     print(f"wrote {len(df):,} rows -> {path}")
+
+    # Underlying spot/price line: anchors ATM detection and is the step-2 price axis.
+    _fetch_underlying_price(api, underlying, frm, to)
     return path
+
+
+def _fetch_underlying_price(api: "Upstox", underlying: str, frm: str, to: str) -> None:
+    """Pull the underlying's own daily candles -> data/<slug>/price.parquet.
+
+    Merged across calls and de-duplicated by date so the price history
+    accumulates as new expiries are fetched. ``close`` is the daily spot.
+    """
+    try:
+        candles = api.candles_live(underlying, frm, to)
+    except RuntimeError as e:
+        print(f"  ! underlying price fetch failed ({e}); ATM will fall back to parity")
+        return
+    if not candles:
+        return
+    px = pd.DataFrame([dict(zip(_COLS, c)) for c in candles])
+    px["date"] = pd.to_datetime(px["ts"]).dt.date.astype(str)
+    px = px[["date", "close"]].rename(columns={"close": "spot"})
+
+    out = DATA_DIR / _slug(underlying) / "price.parquet"
+    if out.exists():
+        prev = pd.read_parquet(out)
+        px = pd.concat([prev, px]).drop_duplicates("date", keep="last")
+    px = px.sort_values("date")
+    px.to_parquet(out, index=False)
+    print(f"wrote {len(px):,} price rows -> {out}")
 
 
 # --------------------------------------------------------------------------- #
@@ -194,15 +223,42 @@ def fetch(underlying: str, expiry: str, frm: str, to: str, expired: bool) -> Pat
 def pcr(underlying: str, atm_window: int = ATM_WINDOW) -> pd.DataFrame:
     import duckdb
 
-    glob = str(DATA_DIR / _slug(underlying) / "**" / "*.parquet")
+    chain_glob = str(DATA_DIR / _slug(underlying) / "expiry=*" / "*.parquet")
+    price_path = DATA_DIR / _slug(underlying) / "price.parquet"
     con = duckdb.connect()
 
-    # ATM strike per date = strike whose CE & PE premia are closest (proxy for spot),
-    # then keep strikes within +/- atm_window steps of it for the ATM variant.
+    # Spot table is optional: if price.parquet is missing we fall back to the
+    # put-call-parity proxy for ATM (less reliable on illiquid daily closes).
+    if price_path.exists():
+        spot_cte = f"""
+        spot AS (SELECT date, spot FROM read_parquet('{price_path}'))"""
+        # ATM = listed strike nearest to spot
+        atm_pick_sql = """
+        atm_pick AS (
+            SELECT sr.date, sr.strike AS atm_strike,
+                   ROW_NUMBER() OVER (PARTITION BY sr.date
+                                      ORDER BY ABS(sr.strike - s.spot)) AS rn
+            FROM strike_ranks sr JOIN spot s USING(date)
+        )"""
+    else:
+        spot_cte = "\n        spot AS (SELECT NULL::VARCHAR AS date, NULL::DOUBLE AS spot WHERE 1=0)"
+        # ATM proxy: strike where |CE premium - PE premium| is smallest
+        atm_pick_sql = """
+        atm AS (
+            SELECT date, strike,
+                   ABS(SUM(CASE WHEN opt_type='CE' THEN ltp ELSE -ltp END)) AS ce_pe_gap
+            FROM raw GROUP BY date, strike
+        ),
+        atm_pick AS (
+            SELECT date, strike AS atm_strike,
+                   ROW_NUMBER() OVER (PARTITION BY date ORDER BY ce_pe_gap) AS rn
+            FROM atm
+        )"""
+
     q = f"""
     WITH raw AS (
         SELECT date, strike, opt_type, oi, close AS ltp
-        FROM read_parquet('{glob}', hive_partitioning = true)
+        FROM read_parquet('{chain_glob}', hive_partitioning = true)
         WHERE oi IS NOT NULL AND close IS NOT NULL
     ),
     -- rank each distinct strike within its date (1,2,3,... low->high)
@@ -211,17 +267,8 @@ def pcr(underlying: str, atm_window: int = ATM_WINDOW) -> pd.DataFrame:
                DENSE_RANK() OVER (PARTITION BY date ORDER BY strike) AS strike_rank
         FROM (SELECT DISTINCT date, strike FROM raw)
     ),
-    -- ATM proxy: strike where |CE premium - PE premium| is smallest (put-call parity ~ spot)
-    atm AS (
-        SELECT date, strike,
-               ABS(SUM(CASE WHEN opt_type='CE' THEN ltp ELSE -ltp END)) AS ce_pe_gap
-        FROM raw GROUP BY date, strike
-    ),
-    atm_pick AS (
-        SELECT date, strike AS atm_strike,
-               ROW_NUMBER() OVER (PARTITION BY date ORDER BY ce_pe_gap) AS rn
-        FROM atm
-    ),
+    {spot_cte},
+    {atm_pick_sql},
     atm_final AS (                       -- ATM strike + its rank, one row per date
         SELECT ap.date, ap.atm_strike, sr.strike_rank AS atm_rank
         FROM (SELECT date, atm_strike FROM atm_pick WHERE rn=1) ap
