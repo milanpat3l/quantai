@@ -215,6 +215,13 @@ def _merge_chain(df: pd.DataFrame, underlying: str, expiry: str,
     df = df.sort_values(_CHAIN_KEY)
     df.to_parquet(path, index=False)
     print(f"chain now {len(df):,} rows -> {path}")
+    # tiny sidecar so the dashboard can show a friendly name even when only the
+    # aggregated files (not the raw chain) are present in storage
+    try:
+        (DATA_DIR / _slug(underlying) / "meta.json").write_text(
+            json.dumps({"name": name or underlying, "key": underlying}))
+    except Exception:
+        pass
     return path
 
 
@@ -495,6 +502,16 @@ def pcr(underlying: str, atm_window: int = ATM_WINDOW) -> pd.DataFrame:
     """
     df = con.execute(q).df()
     out = DATA_DIR / _slug(underlying) / "pcr_daily.parquet"
+    # Merge into any existing table (dedupe by date, keep latest). This lets a
+    # scheduled job keep only the small pcr_daily/price parquet in storage and
+    # re-fetch just a short recent window each run, without losing history.
+    if out.exists():
+        try:
+            prev = pd.read_parquet(out)
+            df = (pd.concat([prev, df]).drop_duplicates("date", keep="last")
+                    .sort_values("date").reset_index(drop=True))
+        except Exception:
+            pass
     df.to_parquet(out, index=False)
     print(f"PCR table: {len(df)} days -> {out}")
     return df

@@ -1,0 +1,55 @@
+name: Daily OI-PCR log
+
+# Runs every weekday at 19:00 UTC (00:30 IST) — after NSE/BSE (15:30 IST) and
+# MCX (~23:30 IST) have closed, so the day's candles are final. Also runnable
+# on demand from the Actions tab ("Run workflow").
+on:
+  schedule:
+    - cron: "0 19 * * 1-5"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-log
+  cancel-in-progress: false
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # slim deps — the logger only needs these (no plotly/streamlit/sklearn)
+      - run: pip install --quiet pandas requests duckdb pyarrow
+
+      - name: Log + aggregate the universe
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+        run: |
+          set -e
+          python upstox_oi_pcr.py log --universe nse_index                 --lookback 7
+          python upstox_oi_pcr.py log --universe bse_index --atm-window 15  --lookback 7
+          python upstox_oi_pcr.py log --universe mcx        --atm-window 12 --lookback 7
+          python upstox_oi_pcr.py log --universe nse_stocks --atm-window 10 --lookback 7
+
+      - name: Commit the data store (small aggregated files only)
+        run: |
+          git config user.name  "quantai-bot"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # store only the tiny daily tables + price line; raw chains stay out of git
+          files=$(find data \( -name 'pcr_daily.parquet' -o -name 'price.parquet' -o -name 'meta.json' \) 2>/dev/null || true)
+          if [ -z "$files" ]; then echo "nothing to store"; exit 0; fi
+          git add -f $files
+          if git diff --cached --quiet; then
+            echo "no data changes"
+          else
+            git commit -m "data: daily log $(date -u +%F)"
+            git push
+          fi

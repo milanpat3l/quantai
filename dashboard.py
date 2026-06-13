@@ -18,6 +18,7 @@ first so there is data to show).
 
 from __future__ import annotations
 
+import json
 import os
 
 import pandas as pd
@@ -77,18 +78,25 @@ def list_underlyings() -> dict[str, str]:
         if not (d / "pcr_daily.parquet").exists():
             continue
         label = d.name
-        chains = list(d.glob("expiry=*/chain.parquet"))
-        if chains:  # recover the human display name (RELIANCE / GOLD / Nifty 50)
-            for col in ("name", "underlying"):
-                try:
-                    vals = pd.read_parquet(chains[0], columns=[col])[col].dropna()
-                    if len(vals):
-                        label = vals.iloc[0]
-                        break
-                except Exception:
-                    continue
+        meta = d / "meta.json"
+        if meta.exists():  # written by the logger; survives without the raw chain
+            try:
+                label = json.loads(meta.read_text()).get("name", label)
+            except Exception:
+                pass
+        else:
+            chains = list(d.glob("expiry=*/chain.parquet"))
+            if chains:  # recover the human display name from the chain if present
+                for col in ("name", "underlying"):
+                    try:
+                        vals = pd.read_parquet(chains[0], columns=[col])[col].dropna()
+                        if len(vals):
+                            label = vals.iloc[0]
+                            break
+                    except Exception:
+                        continue
         label = str(label)
-        if "|" in label:  # legacy rows stored the raw instrument_key
+        if "|" in label:  # raw instrument_key -> friendly name
             try:
                 label = universe.display_name(label)
             except Exception:
