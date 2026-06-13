@@ -316,7 +316,7 @@ def pcr(underlying: str, atm_window: int = ATM_WINDOW) -> pd.DataFrame:
 
     q = f"""
     WITH raw AS (
-        SELECT date, strike, opt_type, oi, close AS ltp
+        SELECT date, strike, opt_type, oi, volume, close AS ltp
         FROM read_parquet('{chain_glob}', hive_partitioning = true)
         WHERE oi IS NOT NULL AND close IS NOT NULL
     ),
@@ -351,8 +351,17 @@ def pcr(underlying: str, atm_window: int = ATM_WINDOW) -> pd.DataFrame:
         SUM(CASE WHEN opt_type='PE' AND ABS(strike_rank-atm_rank)<={atm_window} THEN oi*ltp END)
           / NULLIF(SUM(CASE WHEN opt_type='CE' AND ABS(strike_rank-atm_rank)<={atm_window} THEN oi*ltp END),0)
                                                                                        AS pcr_m_atm,
+        -- volume PCR (Quantsapp VOL-PCR), full chain
+        SUM(CASE WHEN opt_type='PE' THEN volume END)
+          / NULLIF(SUM(CASE WHEN opt_type='CE' THEN volume END),0)                     AS vol_pcr,
+        -- volume PCR restricted to ATM +/- window
+        SUM(CASE WHEN opt_type='PE' AND ABS(strike_rank-atm_rank)<={atm_window} THEN volume END)
+          / NULLIF(SUM(CASE WHEN opt_type='CE' AND ABS(strike_rank-atm_rank)<={atm_window} THEN volume END),0)
+                                                                                       AS vol_pcr_atm,
         SUM(CASE WHEN opt_type='CE' THEN oi END) AS call_oi,
         SUM(CASE WHEN opt_type='PE' THEN oi END) AS put_oi,
+        SUM(CASE WHEN opt_type='CE' THEN volume END) AS call_vol,
+        SUM(CASE WHEN opt_type='PE' THEN volume END) AS put_vol,
         MAX(atm_strike) AS atm_strike
     FROM banded
     GROUP BY date

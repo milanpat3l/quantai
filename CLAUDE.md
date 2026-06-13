@@ -45,6 +45,8 @@ with DuckDB. Optional nightly backup to Cloudflare R2 (10 GB free) or Google Dri
 - `PCR        = Σ put_oi / Σ call_oi`
 - `PCR_M      = Σ(put_oi × put_ltp) / Σ(call_oi × call_ltp)`  (premium-weighted, full chain)
 - `PCR_M_ATM  = same, restricted to ATM ± N strikes`  (reconstruction of Quantsapp "near current price")
+- `VOL_PCR    = Σ put_volume / Σ call_volume`  (Quantsapp VOL-PCR-H)
+- `VOL_PCR_ATM= same, restricted to ATM ± N strikes`
 - ATM = listed strike nearest to the underlying spot (from `price.parquet`).
   Falls back to the put-call-parity proxy (min |CE_ltp − PE_ltp|) only when no
   spot is available. The parity proxy alone proved unreliable on real daily
@@ -61,7 +63,10 @@ Two CLI commands:
   market close via `run_daily.sh` (cron) so OI history accumulates on the free
   Analytics token — the only depth path without Plus/expired backfill.
 - `pcr --underlying "NSE_INDEX|Nifty 50" [--atm-window N]`
-  → DuckDB aggregation → daily table: `pcr`, `pcr_m`, `pcr_m_atm`, `call_oi`, `put_oi`, `atm_strike`.
+  → DuckDB aggregation → daily table: `pcr`, `pcr_m`, `pcr_m_atm`, `vol_pcr`,
+  `vol_pcr_atm`, `call_oi`, `put_oi`, `call_vol`, `put_vol`, `atm_strike`.
+- `plot_pcr.py --series {pcr,pcr_m,pcr_m_atm,vol_pcr,vol_pcr_atm}` → dual-axis chart.
+- `dashboard.py` (Streamlit) → interactive chart + history table; `streamlit run dashboard.py`.
 
 Auth: uses the read-only **Upstox Analytics Token** (~1yr, no daily login, no
 Static IP for market data) in `UPSTOX_ACCESS_TOKEN` (local `.env`, git-ignored).

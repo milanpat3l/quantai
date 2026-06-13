@@ -29,7 +29,12 @@ config.load_env()
 from upstox_oi_pcr import DATA_DIR, _slug   # reuse store layout
 
 PCR_GREEN = "#2e9e5b"
+VOL_BLUE = "#3b82c4"      # Quantsapp uses blue for the Volume-PCR line
 PRICE_ORANGE = "#e8912a"
+
+
+def _series_color(series: str) -> str:
+    return VOL_BLUE if series.startswith("vol") else PCR_GREEN
 
 
 def _local_extrema(y: pd.Series, window: int) -> tuple[list[int], list[int]]:
@@ -63,11 +68,12 @@ def load(underlying: str) -> pd.DataFrame:
 
 def build_figure(df: pd.DataFrame, series: str, window: int, title: str) -> go.Figure:
     fig = make_subplots(specs=[[{"secondary_y": True}]])
+    color = _series_color(series)
 
-    # left axis: OI-PCR series
+    # left axis: PCR series (green for OI-PCR, blue for Volume-PCR)
     fig.add_trace(go.Scatter(
         x=df["date"], y=df[series], name=series.upper().replace("_", "-"),
-        mode="lines", line=dict(color=PCR_GREEN, width=2)), secondary_y=False)
+        mode="lines", line=dict(color=color, width=2)), secondary_y=False)
 
     # right axis: price line
     if df["spot"].notna().any():
@@ -101,7 +107,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description="Dual-axis OI-PCR vs price chart")
     p.add_argument("--underlying", default="NSE_INDEX|Nifty 50")
     p.add_argument("--series", default="pcr_m",
-                   choices=["pcr", "pcr_m", "pcr_m_atm"], help="which PCR line")
+                   choices=["pcr", "pcr_m", "pcr_m_atm", "vol_pcr", "vol_pcr_atm"],
+                   help="which PCR line")
     p.add_argument("--window", type=int, default=1,
                    help="neighbours each side for turning-point detection")
     p.add_argument("--out", default=None, help="output path stem (default in store)")

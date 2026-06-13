@@ -4,3 +4,4 @@ duckdb>=0.10
 pyarrow>=14.0
 plotly>=6.0
 kaleido>=1.0   # static PNG export (needs Chrome: run `plotly_get_chrome`)
+streamlit>=1.30  # interactive dashboard: `streamlit run dashboard.py`
