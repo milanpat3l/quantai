@@ -239,6 +239,41 @@ def main() -> None:
         st.caption("Gate before any ML: a stable, signed correlation at positive lags is the "
                    "edge. With only a few days logged this is noise — it firms up as history grows.")
 
+    # ---- ML signal: walk-forward model -> next-day direction --------------- #
+    with st.expander("🤖 ML signal (experimental) — Logistic / Decision Tree / Random Forest", expanded=False):
+        import model as mdl
+        mc1, mc2 = st.columns([2, 2])
+        mname = mc1.selectbox("Model", list(mdl.MODELS),
+                              format_func=lambda m: {"logistic": "Logistic regression",
+                              "tree": "Decision Tree", "forest": "Random Forest"}[m])
+        # adapt min-train to however much data exists so the panel is illustrative now
+        n_have = int(dff[series].notna().sum())
+        min_train = mc2.slider("Min training days", 3, max(5, n_have - 2),
+                               min(40, max(3, n_have // 2)))
+        X, y, _ = mdl.build_features(dff, price_col)
+        res = mdl.walk_forward(X, y, min_train, mname)
+        if res["status"] == "insufficient":
+            st.info(f"Insufficient data: {res['n']} labelled days, need ~{res['need']}. "
+                    "The model framework is wired and ready — it just needs history.")
+        else:
+            a, b, c = st.columns(3)
+            a.metric("Walk-forward accuracy", f"{res['accuracy']:.0%}")
+            b.metric("Coin-flip / base rate", f"{res['baseline']:.0%}")
+            c.metric("Edge over base", f"{res['edge']:+.0%}", help=f"tested on {res['tested']} days")
+            if mdl.credible(res):
+                call = mdl.latest_call(X, y, mname, min_train)
+                if call["status"] == "ok":
+                    pr = f" · confidence {call['prob']:.0%}" if call.get("prob") else ""
+                    st.success(f"Next-session call: **{call['direction']}**{pr}")
+            else:
+                st.warning("⚠ Not a tradeable signal yet — too few out-of-sample days "
+                           "and/or no real edge over a coin flip. Tree models in particular "
+                           "**memorise** tiny datasets, so any high score here now is an "
+                           "illusion. This becomes meaningful only after months of logged "
+                           "data and a confirmed lead-lag edge above.")
+        st.caption("Features: PCR levels + day-over-day changes at day t → next-day price "
+                   "direction. Strict expanding-window walk-forward (no shuffling, no lookahead).")
+
 
 if __name__ == "__main__":
     main()

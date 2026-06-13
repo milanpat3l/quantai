@@ -73,9 +73,11 @@ Two CLI commands:
   `vol_pcr_atm`, `call_oi`, `put_oi`, `call_vol`, `put_vol`, `atm_strike`.
 - `plot_pcr.py --series {pcr,pcr_m,pcr_m_atm,vol_pcr,vol_pcr_atm} [--price fut|spot]` → dual-axis chart.
 - `analysis.py` → lead-lag check corr(PCR[t], price_return[t+lag]).
-- `model.py` → walk-forward (expanding-window) PCR→next-day-direction baseline; refuses on thin data.
+- `model.py` → walk-forward (expanding-window) PCR→next-day-direction; models:
+  logistic / decision-tree / random-forest. Reports accuracy vs majority baseline
+  and refuses to emit a signal until enough out-of-sample days + real edge.
 - `dashboard.py` (Streamlit) → interactive chart + history table + Futures/Spot toggle
-  + lead-lag panel; `streamlit run dashboard.py`.
+  + lead-lag panel + experimental ML-signal panel; `streamlit run dashboard.py`.
 
 Price line: near-month FUTURES close (resolved from Upstox's NSE instrument
 master, cached) stored alongside spot in `price.parquet`; spot remains the ATM
