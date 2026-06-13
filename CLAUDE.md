@@ -55,6 +55,11 @@ with DuckDB. Optional nightly backup to Cloudflare R2 (10 GB free) or Google Dri
 Two CLI commands:
 - `fetch --underlying "NSE_INDEX|Nifty 50" --expiry YYYY-MM-DD --from YYYY-MM-DD [--expired]`
   → pulls each CE/PE leg's daily candles + the underlying spot → partitioned Parquet.
+- `log [--underlying ..] [--expiry ..] [--lookback 7]`
+  → forward-logger: auto-picks the nearest live expiry, pulls the last N days,
+  and **idempotently merges** into the store (re-runs are safe). Run daily after
+  market close via `run_daily.sh` (cron) so OI history accumulates on the free
+  Analytics token — the only depth path without Plus/expired backfill.
 - `pcr --underlying "NSE_INDEX|Nifty 50" [--atm-window N]`
   → DuckDB aggregation → daily table: `pcr`, `pcr_m`, `pcr_m_atm`, `call_oi`, `put_oi`, `atm_strike`.
 
@@ -70,8 +75,9 @@ return UDAPI1221 without Static IP — expected; we don't use them.
 ## Known caveats
 - **Expiry-roll discontinuity:** OI collapses to ~0 at expiry; naive concatenation of
   consecutive expiries creates fake spikes. Use near-month selection or clean rolls.
-- Expired-instruments path needs Plus; without it, only the current live expiry is
-  fetchable (build history forward from today).
+- Expired-instruments path is **blocked on the read-only Analytics token**
+  (UDAPI100067) and also needs Plus. Decision: stay on the free Analytics token
+  and **build history forward** via the daily `log` command (`run_daily.sh`).
 - Daily data = small samples → ML overfits easily (see roadmap).
 
 ## Roadmap (do in this order)

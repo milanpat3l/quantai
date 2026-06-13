@@ -106,16 +106,29 @@ class Upstox:
         raise RuntimeError(f"giving up after retries: {url}")
 
     # ----- contract enumeration ------------------------------------------- #
+    def option_contracts_raw(self, underlying: str) -> list[dict]:
+        """All live option contracts for an underlying (all listed expiries)."""
+        url = f"{BASE}/v2/option/contract"
+        return self._get(url, {"instrument_key": underlying}).get("data", [])
+
     def live_option_contracts(self, underlying: str, expiry: str) -> list[Contract]:
         """Active (not yet expired) expiry -- free tier."""
-        url = f"{BASE}/v2/option/contract"
-        data = self._get(url, {"instrument_key": underlying}).get("data", [])
         out = []
-        for d in data:
+        for d in self.option_contracts_raw(underlying):
             if d.get("expiry") == expiry and d.get("instrument_type") in ("CE", "PE"):
                 out.append(Contract(d["instrument_key"], d["instrument_type"],
                                     float(d["strike_price"]), expiry, expired=False))
         return out
+
+    def front_expiry(self, underlying: str, on: str | None = None) -> str:
+        """Nearest listed expiry on/after ``on`` (default today). YYYY-MM-DD."""
+        on = on or dt.date.today().isoformat()
+        expiries = sorted({d["expiry"] for d in self.option_contracts_raw(underlying)
+                           if d.get("instrument_type") in ("CE", "PE")})
+        future = [e for e in expiries if e >= on]
+        if not future:
+            sys.exit(f"No live expiry on/after {on} for {underlying}.")
+        return future[0]
 
     def expired_option_contracts(self, underlying: str, expiry: str) -> list[Contract]:
         """Already-expired expiry -- requires Upstox PLUS."""
@@ -153,14 +166,14 @@ def _slug(underlying: str) -> str:
     return underlying.replace("|", "_").replace(" ", "_").replace(":", "_")
 
 
-def fetch(underlying: str, expiry: str, frm: str, to: str, expired: bool) -> Path:
-    api = Upstox()
-    contracts = (api.expired_option_contracts(underlying, expiry) if expired
-                 else api.live_option_contracts(underlying, expiry))
-    if not contracts:
-        sys.exit("No contracts returned -- check underlying key / expiry / plan.")
+# de-dup key for the chain store: one row per (date, strike, opt_type) per expiry
+_CHAIN_KEY = ["date", "strike", "opt_type"]
 
-    print(f"{len(contracts)} legs for {underlying} @ {expiry}; pulling daily candles...")
+
+def _pull_legs(api: "Upstox", contracts: list[Contract], frm: str, to: str,
+               expiry: str) -> pd.DataFrame:
+    """Pull daily candles for every leg into a long-form DataFrame."""
+    print(f"{len(contracts)} legs @ {expiry}; pulling daily candles {frm}..{to} ...")
     rows = []
     for i, c in enumerate(contracts, 1):
         try:
@@ -172,21 +185,67 @@ def fetch(underlying: str, expiry: str, frm: str, to: str, expired: bool) -> Pat
             print(f"  ! {c.instrument_key}: {e}")
         if i % 25 == 0:
             print(f"  ...{i}/{len(contracts)}")
-
     if not rows:
-        sys.exit("No candle data -- nothing written.")
-
+        return pd.DataFrame()
     df = pd.DataFrame(rows)
     df["date"] = pd.to_datetime(df["ts"]).dt.date.astype(str)
-    df["underlying"] = underlying
+    return df
 
+
+def _merge_chain(df: pd.DataFrame, underlying: str, expiry: str) -> Path:
+    """Idempotently merge new rows into this expiry's chain.parquet.
+
+    Existing rows with the same (date, strike, opt_type) are overwritten by the
+    new pull, so re-running (e.g. a daily logger) is safe and gap-filling works.
+    """
+    df = df.copy()
+    df["underlying"] = underlying
     out = DATA_DIR / _slug(underlying) / f"expiry={expiry}"
     out.mkdir(parents=True, exist_ok=True)
     path = out / "chain.parquet"
+    if path.exists():
+        prev = pd.read_parquet(path)
+        df = pd.concat([prev, df]).drop_duplicates(_CHAIN_KEY, keep="last")
+    df = df.sort_values(_CHAIN_KEY)
     df.to_parquet(path, index=False)
-    print(f"wrote {len(df):,} rows -> {path}")
+    print(f"chain now {len(df):,} rows -> {path}")
+    return path
+
+
+def fetch(underlying: str, expiry: str, frm: str, to: str, expired: bool) -> Path:
+    api = Upstox()
+    contracts = (api.expired_option_contracts(underlying, expiry) if expired
+                 else api.live_option_contracts(underlying, expiry))
+    if not contracts:
+        sys.exit("No contracts returned -- check underlying key / expiry / plan.")
+
+    df = _pull_legs(api, contracts, frm, to, expiry)
+    if df.empty:
+        sys.exit("No candle data -- nothing written.")
+    path = _merge_chain(df, underlying, expiry)
 
     # Underlying spot/price line: anchors ATM detection and is the step-2 price axis.
+    _fetch_underlying_price(api, underlying, frm, to)
+    return path
+
+
+def log_daily(underlying: str, lookback: int = 7, expiry: str | None = None) -> Path:
+    """Forward-logger: capture recent OI for the front (or given) expiry and
+    merge into the store. Designed to run daily (cron) after market close so
+    history accumulates on the free Analytics token (no expired backfill).
+    """
+    api = Upstox()
+    expiry = expiry or api.front_expiry(underlying)
+    to = dt.date.today().isoformat()
+    frm = (dt.date.today() - dt.timedelta(days=lookback)).isoformat()
+    contracts = api.live_option_contracts(underlying, expiry)
+    if not contracts:
+        sys.exit(f"No live contracts for {underlying} @ {expiry}.")
+    df = _pull_legs(api, contracts, frm, to, expiry)
+    if df.empty:
+        print("No new candle data (market holiday?) -- store unchanged.")
+        return DATA_DIR / _slug(underlying) / f"expiry={expiry}" / "chain.parquet"
+    path = _merge_chain(df, underlying, expiry)
     _fetch_underlying_price(api, underlying, frm, to)
     return path
 
@@ -321,6 +380,14 @@ def main():
     f.add_argument("--expired", action="store_true",
                    help="use expired-instruments endpoints (needs Upstox PLUS)")
 
+    lg = sub.add_parser("log", help="daily forward-logger: append latest OI for the front expiry")
+    lg.add_argument("--underlying", default="NSE_INDEX|Nifty 50",
+                    help='default "NSE_INDEX|Nifty 50"')
+    lg.add_argument("--expiry", default=None,
+                    help="YYYY-MM-DD (default: nearest live expiry)")
+    lg.add_argument("--lookback", type=int, default=7,
+                    help="days back to (re)pull for gap-fill (default 7)")
+
     a = sub.add_parser("pcr", help="aggregate Parquet -> daily PCR / PCR_M table")
     a.add_argument("--underlying", required=True)
     a.add_argument("--atm-window", type=int, default=ATM_WINDOW)
@@ -328,6 +395,8 @@ def main():
     args = p.parse_args()
     if args.cmd == "fetch":
         fetch(args.underlying, args.expiry, args.frm, args.to, args.expired)
+    elif args.cmd == "log":
+        log_daily(args.underlying, args.lookback, args.expiry)
     elif args.cmd == "pcr":
         df = pcr(args.underlying, args.atm_window)
         print(df.tail(15).to_string(index=False))
