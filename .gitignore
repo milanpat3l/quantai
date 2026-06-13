@@ -19,3 +19,6 @@ st.log
 nohup.out
 _shot*.py
 /*.png
+
+# streamlit secrets (never commit the real token)
+.streamlit/secrets.toml

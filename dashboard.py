@@ -39,6 +39,33 @@ SERIES_LABELS = {
     "vol_pcr_atm": "Volume PCR (ATM window)",
 }
 
+# friendly market label -> (universe group, ATM-window for fetching)
+MARKETS = {
+    "NSE Indices": ("nse_index", None),
+    "NSE Stocks": ("nse_stocks", 12),
+    "BSE Indices": ("bse_index", 15),
+    "MCX Commodities": ("mcx", 12),
+}
+
+
+def _bridge_secret() -> None:
+    """Let the Upstox token come from Streamlit secrets (cloud) as well as .env."""
+    if not os.environ.get("UPSTOX_ACCESS_TOKEN"):
+        try:
+            tok = st.secrets.get("UPSTOX_ACCESS_TOKEN")
+            if tok:
+                os.environ["UPSTOX_ACCESS_TOKEN"] = str(tok)
+        except Exception:
+            pass
+
+
+@st.cache_data(show_spinner=False)
+def group_underlyings(group: str) -> list[tuple[str, str]]:
+    try:
+        return universe.underlyings(group)
+    except Exception:
+        return []
+
 
 @st.cache_data(show_spinner=False)
 def list_underlyings() -> dict[str, str]:
@@ -84,33 +111,47 @@ def _arrow(delta: float) -> str:
 def main() -> None:
     st.set_page_config(page_title="OI-PCR Dashboard", layout="wide",
                        page_icon="📈")
+    _bridge_secret()
     st.markdown("## 📈 OI-PCR Historical — Put/Call Ratio vs Price")
 
     unders = list_underlyings()
 
-    # ---- sidebar: data status + one-click refresh -------------------------- #
+    # ---- sidebar: add / refresh data (no typing of instrument keys) -------- #
     with st.sidebar:
-        st.header("Data")
+        st.header("➕ Add / refresh data")
         token_ok = bool(os.environ.get("UPSTOX_ACCESS_TOKEN"))
-        st.caption("Analytics token: " + ("✅ set" if token_ok else "❌ missing (.env)"))
-        refresh_label = st.text_input("Underlying to fetch",
-                                      value=next(iter(unders), "NSE_INDEX|Nifty 50"))
-        if st.button("⟳ Fetch latest (log)", disabled=not token_ok,
-                     help="Runs the forward-logger for the front expiry, then rebuilds PCR"):
-            with st.spinner(f"Logging {refresh_label} …"):
+        if token_ok:
+            st.caption("Upstox token: ✅ connected")
+        else:
+            st.error("No Upstox token. Add UPSTOX_ACCESS_TOKEN in app Settings → "
+                     "Secrets (cloud) or a local .env file.")
+
+        market = st.selectbox("Market", list(MARKETS.keys()), disabled=not token_ok)
+        group, fetch_win = MARKETS[market]
+        opts = group_underlyings(group) if token_ok else []
+        names = [nm for _, nm in opts]
+        keymap = {nm: uk for uk, nm in opts}
+        pick = st.selectbox("Instrument", names, disabled=not names,
+                            help="Pick what to download — no codes needed")
+        if st.button("⬇ Get latest data", disabled=not (token_ok and pick),
+                     type="primary"):
+            uk = keymap[pick]
+            with st.spinner(f"Downloading {pick} … (first run can take ~30s)"):
                 try:
-                    log_daily(refresh_label)
+                    log_daily(uk, atm_window=fetch_win)
                     import upstox_oi_pcr
-                    upstox_oi_pcr.pcr(refresh_label)
+                    upstox_oi_pcr.pcr(uk)
                     st.cache_data.clear()
-                    st.success("Updated. Re-rendering…")
+                    st.success(f"{pick} updated.")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Fetch failed: {e}")
+        st.caption("Data is built up over time — run this daily (or set the "
+                   "cron in run_daily.sh) so the history grows.")
 
     if not unders:
-        st.warning("No data yet. Set UPSTOX_ACCESS_TOKEN in `.env`, then run "
-                   "`python3 upstox_oi_pcr.py log` (or use the sidebar button).")
+        st.info("👈 No data loaded yet. In the left panel, pick a **Market** and "
+                "**Instrument**, then click **Get latest data**.")
         st.stop()
 
     c1, c2, c3 = st.columns([3, 4, 2])
