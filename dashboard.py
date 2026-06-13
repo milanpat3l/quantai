@@ -29,6 +29,7 @@ config.load_env()
 from upstox_oi_pcr import DATA_DIR, _slug, log_daily
 import plot_pcr
 import analysis
+import universe
 
 SERIES_LABELS = {
     "pcr": "OI-PCR (standard)",
@@ -50,9 +51,19 @@ def list_underlyings() -> dict[str, str]:
             continue
         label = d.name
         chains = list(d.glob("expiry=*/chain.parquet"))
-        if chains:  # recover the real "NSE_INDEX|Nifty 50" name if we can
+        if chains:  # recover the human display name (RELIANCE / GOLD / Nifty 50)
+            for col in ("name", "underlying"):
+                try:
+                    vals = pd.read_parquet(chains[0], columns=[col])[col].dropna()
+                    if len(vals):
+                        label = vals.iloc[0]
+                        break
+                except Exception:
+                    continue
+        label = str(label)
+        if "|" in label:  # legacy rows stored the raw instrument_key
             try:
-                label = pd.read_parquet(chains[0], columns=["underlying"])["underlying"].iloc[0]
+                label = universe.display_name(label)
             except Exception:
                 pass
         out[label] = d.name
@@ -60,8 +71,8 @@ def list_underlyings() -> dict[str, str]:
 
 
 @st.cache_data(show_spinner=False)
-def load(label: str) -> pd.DataFrame:
-    return plot_pcr.load(label)
+def load(slug: str) -> pd.DataFrame:
+    return plot_pcr.load_slug(slug)
 
 
 def _arrow(delta: float) -> str:
@@ -110,7 +121,7 @@ def main() -> None:
     window = int(c3.number_input("Turning-point window", 1, 10, 1,
                                  help="neighbours each side for peak/trough detection"))
 
-    df = load(label)
+    df = load(unders[label])
     if df.empty:
         st.error("Empty PCR table for this underlying.")
         st.stop()

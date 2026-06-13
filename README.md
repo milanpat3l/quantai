@@ -25,7 +25,10 @@ daily login or Static IP for market data. Generate it at
 python upstox_oi_pcr.py fetch --underlying "NSE_INDEX|Nifty 50" --expiry 2026-06-16 --from 2026-06-01
 
 # daily forward-logger (auto front expiry, idempotent merge) — cron via run_daily.sh
-python upstox_oi_pcr.py log
+python upstox_oi_pcr.py log                                  # one underlying
+python upstox_oi_pcr.py log --universe nse_index             # a whole group
+python upstox_oi_pcr.py log --universe nse_stocks --atm-window 12   # broad, capped
+python upstox_oi_pcr.py universe --group mcx                 # list a group
 
 # aggregate -> daily PCR table (pcr, pcr_m, pcr_m_atm, vol_pcr, vol_pcr_atm, ...)
 python upstox_oi_pcr.py pcr --underlying "NSE_INDEX|Nifty 50"

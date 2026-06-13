@@ -57,11 +57,17 @@ with DuckDB. Optional nightly backup to Cloudflare R2 (10 GB free) or Google Dri
 Two CLI commands:
 - `fetch --underlying "NSE_INDEX|Nifty 50" --expiry YYYY-MM-DD --from YYYY-MM-DD [--expired]`
   → pulls each CE/PE leg's daily candles + the underlying spot → partitioned Parquet.
-- `log [--underlying ..] [--expiry ..] [--lookback 7]`
+- `log [--underlying KEY] [--universe GROUP] [--expiry ..] [--lookback 7] [--atm-window N] [--max-underlyings M]`
   → forward-logger: auto-picks the nearest live expiry, pulls the last N days,
-  and **idempotently merges** into the store (re-runs are safe). Run daily after
-  market close via `run_daily.sh` (cron) so OI history accumulates on the free
-  Analytics token — the only depth path without Plus/expired backfill.
+  and **idempotently merges** into the store (re-runs are safe). Master-driven,
+  so it works for **NSE stocks & indices, BSE indices, and MCX commodities**.
+  `--universe {nse_index,nse_stocks,bse_index,mcx,all}` logs a whole group;
+  `--atm-window N` caps each chain to ATM±N strikes (essential for the broad
+  universe — full universe is tens of thousands of calls otherwise).
+- `universe [--group G]` → list option underlyings (see `universe.py`).
+- Scale note: 5 NSE indices + 211 NSE stocks + 4 BSE indices + 11 MCX commodities
+  (~231). Run groups on a cron with sensible `--atm-window`; the dashboard
+  auto-lists every underlying that has data.
 - `pcr --underlying "NSE_INDEX|Nifty 50" [--atm-window N]`
   → DuckDB aggregation → daily table: `pcr`, `pcr_m`, `pcr_m_atm`, `vol_pcr`,
   `vol_pcr_atm`, `call_oi`, `put_oi`, `call_vol`, `put_vol`, `atm_strike`.

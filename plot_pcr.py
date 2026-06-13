@@ -54,7 +54,16 @@ def _local_extrema(y: pd.Series, window: int) -> tuple[list[int], list[int]]:
 
 
 def load(underlying: str) -> pd.DataFrame:
-    base = DATA_DIR / _slug(underlying)
+    """Load by underlying string/instrument_key."""
+    return load_base(DATA_DIR / _slug(underlying))
+
+
+def load_slug(slug: str) -> pd.DataFrame:
+    """Load by store directory name (slug), e.g. 'NSE_EQ_INE002A01018'."""
+    return load_base(DATA_DIR / slug)
+
+
+def load_base(base: Path) -> pd.DataFrame:
     pcr = pd.read_parquet(base / "pcr_daily.parquet")
     price_path = base / "price.parquet"
     if price_path.exists():

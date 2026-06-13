@@ -51,6 +51,7 @@ import pandas as pd
 import requests
 
 import config
+import universe
 
 # --------------------------------------------------------------------------- #
 # Config
@@ -195,7 +196,8 @@ def _pull_legs(api: "Upstox", contracts: list[Contract], frm: str, to: str,
     return df
 
 
-def _merge_chain(df: pd.DataFrame, underlying: str, expiry: str) -> Path:
+def _merge_chain(df: pd.DataFrame, underlying: str, expiry: str,
+                 name: str | None = None) -> Path:
     """Idempotently merge new rows into this expiry's chain.parquet.
 
     Existing rows with the same (date, strike, opt_type) are overwritten by the
@@ -203,6 +205,7 @@ def _merge_chain(df: pd.DataFrame, underlying: str, expiry: str) -> Path:
     """
     df = df.copy()
     df["underlying"] = underlying
+    df["name"] = name or underlying
     out = DATA_DIR / _slug(underlying) / f"expiry={expiry}"
     out.mkdir(parents=True, exist_ok=True)
     path = out / "chain.parquet"
@@ -215,42 +218,103 @@ def _merge_chain(df: pd.DataFrame, underlying: str, expiry: str) -> Path:
     return path
 
 
-def fetch(underlying: str, expiry: str, frm: str, to: str, expired: bool) -> Path:
+def _spot_now(api: "Upstox", underlying_key: str) -> float | None:
+    """Latest close of the underlying itself (index/stock spot, or the MCX
+    future that backs commodity options) for ATM windowing."""
+    to = dt.date.today().isoformat()
+    frm = (dt.date.today() - dt.timedelta(days=10)).isoformat()
+    try:
+        cs = api.candles_live(underlying_key, frm, to)
+    except RuntimeError:
+        return None
+    return cs[0][4] if cs else None
+
+
+def _resolve_contracts(underlying_key: str, expiry: str, atm_window: int | None,
+                       api: "Upstox") -> list[Contract]:
+    """Master-driven option legs for any underlying/exchange. If ``atm_window``
+    is set, keep only strikes within +/- that many ranks of the spot-nearest
+    strike — the key lever for logging a broad universe without exploding calls.
+    """
+    rows = universe.legs(underlying_key, expiry)
+    contracts = [Contract(r["instrument_key"], r["opt_type"], r["strike"], expiry, expired=False)
+                 for r in rows]
+    if atm_window and contracts:
+        spot = _spot_now(api, underlying_key)
+        if spot:
+            strikes = sorted({c.strike for c in contracts})
+            ai = min(range(len(strikes)), key=lambda i: abs(strikes[i] - spot))
+            keep = set(strikes[max(0, ai - atm_window): ai + atm_window + 1])
+            contracts = [c for c in contracts if c.strike in keep]
+    return contracts
+
+
+def fetch(underlying: str, expiry: str, frm: str, to: str, expired: bool,
+          atm_window: int | None = None) -> Path:
     api = Upstox()
-    contracts = (api.expired_option_contracts(underlying, expiry) if expired
-                 else api.live_option_contracts(underlying, expiry))
+    if expired:
+        contracts = api.expired_option_contracts(underlying, expiry)
+    else:
+        contracts = _resolve_contracts(underlying, expiry, atm_window, api)
     if not contracts:
         sys.exit("No contracts returned -- check underlying key / expiry / plan.")
 
     df = _pull_legs(api, contracts, frm, to, expiry)
     if df.empty:
         sys.exit("No candle data -- nothing written.")
-    path = _merge_chain(df, underlying, expiry)
-
-    # Underlying spot/price line: anchors ATM detection and is the step-2 price axis.
+    path = _merge_chain(df, underlying, expiry, universe.display_name(underlying))
     _fetch_underlying_price(api, underlying, frm, to)
     return path
 
 
-def log_daily(underlying: str, lookback: int = 7, expiry: str | None = None) -> Path:
+def log_daily(underlying: str, lookback: int = 7, expiry: str | None = None,
+              atm_window: int | None = None) -> Path | None:
     """Forward-logger: capture recent OI for the front (or given) expiry and
-    merge into the store. Designed to run daily (cron) after market close so
-    history accumulates on the free Analytics token (no expired backfill).
+    merge into the store. Master-driven, so it works for NSE stocks/indices,
+    BSE indices, and MCX commodities. Run daily after close (cron) so history
+    accumulates on the free Analytics token.
     """
     api = Upstox()
-    expiry = expiry or api.front_expiry(underlying)
+    expiry = expiry or universe.front_expiry(underlying)
+    if not expiry:
+        print(f"  ! no live expiry for {underlying}; skipping")
+        return None
     to = dt.date.today().isoformat()
     frm = (dt.date.today() - dt.timedelta(days=lookback)).isoformat()
-    contracts = api.live_option_contracts(underlying, expiry)
+    contracts = _resolve_contracts(underlying, expiry, atm_window, api)
     if not contracts:
-        sys.exit(f"No live contracts for {underlying} @ {expiry}.")
+        print(f"  ! no live contracts for {underlying} @ {expiry}; skipping")
+        return None
     df = _pull_legs(api, contracts, frm, to, expiry)
     if df.empty:
         print("No new candle data (market holiday?) -- store unchanged.")
         return DATA_DIR / _slug(underlying) / f"expiry={expiry}" / "chain.parquet"
-    path = _merge_chain(df, underlying, expiry)
+    path = _merge_chain(df, underlying, expiry, universe.display_name(underlying))
     _fetch_underlying_price(api, underlying, frm, to)
     return path
+
+
+def log_universe(group: str, lookback: int = 7, atm_window: int | None = 20,
+                 max_underlyings: int | None = None) -> None:
+    """Log + aggregate an entire group (nse_index / nse_stocks / bse_index /
+    mcx / all). ATM-windowed by default to keep the call volume sane across a
+    broad universe; pass atm_window=None for full chains.
+    """
+    us = universe.underlyings(group)
+    if max_underlyings:
+        us = us[:max_underlyings]
+    print(f"=== logging {len(us)} underlyings in '{group}' "
+          f"(atm_window={atm_window}, lookback={lookback}) ===")
+    ok = 0
+    for i, (uk, nm) in enumerate(us, 1):
+        print(f"[{i}/{len(us)}] {nm} ({uk})")
+        try:
+            if log_daily(uk, lookback, atm_window=atm_window):
+                pcr(uk)
+                ok += 1
+        except Exception as e:
+            print(f"  ! {nm} failed: {e}")
+    print(f"=== done: {ok}/{len(us)} underlyings updated ===")
 
 
 def _fetch_underlying_price(api: "Upstox", underlying: str, frm: str, to: str) -> None:
@@ -450,27 +514,47 @@ def main():
     f.add_argument("--to", default=dt.date.today().isoformat(), help="YYYY-MM-DD (default today)")
     f.add_argument("--expired", action="store_true",
                    help="use expired-instruments endpoints (needs Upstox PLUS)")
+    f.add_argument("--atm-window", type=int, default=None,
+                   help="only fetch strikes within +/-N ranks of spot (caps calls)")
 
     lg = sub.add_parser("log", help="daily forward-logger: append latest OI for the front expiry")
     lg.add_argument("--underlying", default="NSE_INDEX|Nifty 50",
-                    help='default "NSE_INDEX|Nifty 50"')
+                    help='instrument_key, e.g. "NSE_INDEX|Nifty 50"')
+    lg.add_argument("--universe", default=None,
+                    choices=list(universe.GROUPS) + ["all"],
+                    help="log an entire group instead of one underlying")
     lg.add_argument("--expiry", default=None,
                     help="YYYY-MM-DD (default: nearest live expiry)")
     lg.add_argument("--lookback", type=int, default=7,
                     help="days back to (re)pull for gap-fill (default 7)")
+    lg.add_argument("--atm-window", type=int, default=None,
+                    help="only log strikes within +/-N ranks of spot "
+                         "(default None for single underlying; 20 for --universe)")
+    lg.add_argument("--max-underlyings", type=int, default=None,
+                    help="cap how many underlyings a --universe run touches")
 
     a = sub.add_parser("pcr", help="aggregate Parquet -> daily PCR / PCR_M table")
     a.add_argument("--underlying", required=True)
     a.add_argument("--atm-window", type=int, default=ATM_WINDOW)
 
+    ls = sub.add_parser("universe", help="list option underlyings in a group")
+    ls.add_argument("--group", default="nse_index", choices=list(universe.GROUPS) + ["all"])
+
     args = p.parse_args()
     if args.cmd == "fetch":
-        fetch(args.underlying, args.expiry, args.frm, args.to, args.expired)
+        fetch(args.underlying, args.expiry, args.frm, args.to, args.expired, args.atm_window)
     elif args.cmd == "log":
-        log_daily(args.underlying, args.lookback, args.expiry)
+        if args.universe:
+            win = args.atm_window if args.atm_window is not None else 20
+            log_universe(args.universe, args.lookback, win, args.max_underlyings)
+        else:
+            log_daily(args.underlying, args.lookback, args.expiry, args.atm_window)
     elif args.cmd == "pcr":
         df = pcr(args.underlying, args.atm_window)
         print(df.tail(15).to_string(index=False))
+    elif args.cmd == "universe":
+        for uk, nm in universe.underlyings(args.group):
+            print(f"{nm:<16} {uk}")
 
 
 if __name__ == "__main__":

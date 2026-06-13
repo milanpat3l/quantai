@@ -13,11 +13,13 @@ cd "$(dirname "$0")"
 # Activate a venv if present (optional)
 [ -f .venv/bin/activate ] && source .venv/bin/activate
 
-UNDERLYINGS=("NSE_INDEX|Nifty 50" "NSE_INDEX|Nifty Bank")   # add more as needed
-
 echo "=== $(date -Is) daily log run ==="
-for u in "${UNDERLYINGS[@]}"; do
-    python3 upstox_oi_pcr.py log --underlying "$u" --lookback 7
-    python3 upstox_oi_pcr.py pcr --underlying "$u" >/dev/null
-done
+
+# Indices: full chain (small, high-value). Stocks/commodities: ATM-windowed to
+# keep the daily call volume sane. Comment/uncomment groups as you like.
+python3 upstox_oi_pcr.py log --universe nse_index               --lookback 7
+python3 upstox_oi_pcr.py log --universe bse_index --atm-window 15 --lookback 7
+python3 upstox_oi_pcr.py log --universe mcx        --atm-window 12 --lookback 7
+python3 upstox_oi_pcr.py log --universe nse_stocks --atm-window 12 --lookback 7
+
 echo "=== done ==="
