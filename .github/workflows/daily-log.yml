@@ -33,6 +33,10 @@ jobs:
         env:
           UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
         run: |
+          if [ -z "$UPSTOX_ACCESS_TOKEN" ]; then
+            echo "::warning title=Setup needed::UPSTOX_ACCESS_TOKEN secret is not set — skipping. Add it in Settings → Secrets and variables → Actions, then re-run."
+            exit 0
+          fi
           set -e
           python upstox_oi_pcr.py log --universe nse_index                 --lookback 7
           python upstox_oi_pcr.py log --universe bse_index --atm-window 15  --lookback 7
