@@ -13,3 +13,12 @@ __pycache__/
 .venv/
 venv/
 .ipynb_checkpoints/
+
+# dev/run artifacts
+st.log
+nohup.out
+_shot*.py
+/*.png
+
+# streamlit secrets (never commit the real token)
+.streamlit/secrets.toml
